@@ -1,6 +1,8 @@
-# Gate Runner
+# Crowd Run
 
-A tiny Godot 4 game in the style of those fake mobile ads. Your squad runs forward on its own. You only steer left and right. Gates come down the lane toward you, each one behind a wall you have to shoot open.
+A tiny Godot 4 game in the style of those fake mobile ads. A blue crowd runs down a straight bridge. You only swerve left and right. Gates, tire stacks, and red soldiers come toward you.
+
+This is the core run only. Weapons, bosses, coins, the shop, quests, and a level menu are the next steps. They are not in this version.
 
 You do not need to know much about Godot. Open the project, press Play, and it starts.
 
@@ -11,92 +13,104 @@ You do not need to know much about Godot. Open the project, press Play, and it s
 3. Press **F5**, or the **Play** button at the top right.
 4. Click the game window once, so the keyboard controls reach the game.
 
-The window is tall and narrow (540 by 960) on purpose, like a phone held upright.
+The window is tall and narrow (540 by 960), like a phone held upright.
 
 ### Controls
 
-- **A / D** or the **left and right arrow keys** steer the squad.
-- **Hold the left mouse button and drag** to steer. A finger drag does the same thing on a phone.
-- The squad shoots upward by itself. You do not press a fire button.
+- **Hold the left mouse button and drag** to swerve. The crowd follows your finger from where you pressed.
+- **A / D** or the **arrow keys** also slide the crowd.
+- The crowd runs forward and shoots by itself.
 - When you lose, **press any key** to start again.
 
 ### How a run works
 
-The number on the squad is how many runners you have. It starts at 5, in the right lane. There is no maximum. The count never goes below 0, and at 0 the run is over.
+You start as **1** blue soldier. The number floating over the crowd is how many you have. There is no maximum. At 0 the run is over.
 
-Gates come in pairs, always the same distance apart. One gate fills the left half of the lane, the other fills the right half. One side is always good and the other is always bad. Which side is which changes every pair.
+The bridge has no lanes. You can stand anywhere between the rails. The camera stays centered so you always see the full width.
 
-- `+N` adds that many runners. Early on this is only +1 or +2, and it climbs slowly from there.
-- `x2` doubles the squad. It is rare (about 4 percent of good gates) and it does not show up at the start.
-- `-N` removes that many runners. These grow as the run goes on, so they stay a threat.
-- `/2` keeps half the squad, rounded down. 5 becomes 2. 1 becomes 0.
+Gates come in pairs, always the same distance apart. One is good (blue) and one is bad (red). Your crowd's center picks the side. The exact middle counts as the right-hand gate.
 
-Every gate has a gray **wall** on the side facing you. The number on the wall is how many hits are left. Bullets lower that number. A bigger squad lowers it faster, because more runners means more shots. At 0 the wall disappears and the gate behind it can affect you. Later walls start with more hits.
+- `+N` adds that many soldiers. Early on this is only +1 or +2, and it climbs slowly.
+- `x2` doubles the crowd. About 4 percent of good gates, and only after you have run for a bit.
+- `-N` removes that many soldiers. These grow, so they stay a threat.
+- `/2` keeps half the crowd, rounded down. 5 becomes 2. 1 becomes 0.
 
-**Wall rule:** if you run into a wall that still has hits left, you do not get the gate. You lose one runner for each hit still showing. Shooting the wall first makes that cheaper. Breaking it all the way to 0 lets the gate through and costs nothing extra. Bullets are counted before you touch the wall, so a wall that breaks as you arrive still counts as open.
+Shooting a gate does nothing. You just drive through it. A green `+N` or a red `-N` pops up when you do.
 
-The squad shoots a row of bullets by itself. One runner is one bullet. With 8 or fewer runners you see that many bullets, side by side. With more than 8, you still see 8 bullets, but the extra runners are merged into them, so some bullets are thicker and hit harder. The damages in one volley add up to the squad count.
+**Black tire stacks** block part of the road. The red number is their health. Bullets lower it. **Tire rule:** if you touch a stack that still has health, you lose that many soldiers and the stack breaks. Shooting it down to 0 first means you pass for free. You can also swerve around it.
 
-**Distance** at the top is your score. It climbs the whole time the lane is scrolling. Gate values and wall hits grow slowly with that distance.
+**Red soldiers** stand still in a group. Shoot them before you arrive. **Crash rule:** the moment you touch a group, each living enemy takes one of your soldiers with them. One for one, a single time.
 
-Your squad's center decides which gate you took. The exact middle line counts as the right-hand gate, so you cannot score both gates of a pair at the same point.
+**Distance** at the top is how far you have run. Tire health follows a slow-then-steep-then-flat curve, and the game tries to place a stack your current firepower can actually break before you reach it.
+
+Every soldier adds to the damage, even when the crowd is huge. See the note in `scripts/main.gd` about the soldier and bullet caps.
 
 ## Project layout
 
 ```
-project.godot          window size, game name, and which scene plays first
-scenes/main.tscn       the only scene
-scripts/lane_rules.gd  the math, and the numbers you can tune
-scripts/main.gd        keys, movement, spawning, and the score display
-tests/run_tests.gd     checks the math without opening a window
+project.godot         window size, and which scene plays first
+scenes/main.tscn      the only scene
+scripts/run_rules.gd  the math, and the numbers you can tune
+scripts/main.gd       the bridge, the crowd, the shooting, and the HUD
+tests/run_tests.gd    checks the math without opening a window
 ```
 
-Godot also keeps a tiny `.uid` file next to each script. Leave those in place. They are just ids so the editor can find the file if it moves.
+Godot also keeps a tiny `.uid` file next to each script. Leave those in place.
 
 ### Scene tree
 
+What you see in the editor:
+
 ```
-Main (Node2D) — scripts/main.gd
-├── Background (Node2D)
-│   ├── Road (Polygon2D)
-│   ├── LeftEdge (Polygon2D)
-│   └── RightEdge (Polygon2D)
-├── World (Node2D)
-├── Squad (Node2D)
-│   ├── Body (Polygon2D)
-│   └── CountLabel (Label)
+Main (Node3D) — scripts/main.gd
+├── World (Node3D)
+├── Camera3D
 ├── HUD (CanvasLayer)
-│   ├── ScoreLabel (Label)
-│   └── HintLabel (Label)
-└── GameOver (CanvasLayer) — hidden until the squad count hits 0
-    ├── Dimmer (ColorRect)
-    ├── Title (Label)
-    ├── FinalScore (Label)
-    └── RestartHint (Label)
+│   ├── DistanceLabel
+│   └── HintLabel
+└── GameOver (CanvasLayer) — hidden until the crowd is gone
+    ├── Dimmer
+    ├── Title
+    ├── FinalScore
+    └── RestartHint
 ```
 
-While the game is running, short white dashes are added under **Background** so the center line looks like it is moving. Gates, their walls, and bullets are added under **World**. They are plain shapes made in code. There is no art to import.
+While the game runs, the script also builds:
+
+```
+World
+├── Water
+├── Crowd
+│   ├── Bodies (MultiMeshInstance3D)
+│   └── Heads (MultiMeshInstance3D)
+├── Bullets (MultiMeshInstance3D)
+├── CountLabel (Label3D)
+└── Chunks
+    └── Chunk0, Chunk1, ...
+        ├── road, dashes, rails
+        ├── Tires or Enemies
+        ├── GateLeft
+        └── GateRight
+```
 
 ### Which script does what
 
-- `scripts/lane_rules.gd` holds the rules and the tuning numbers. It knows how `+`, `-`, `x`, and `/` change the squad, what a wall crash costs, how many bullets a squad fires, how gate values and wall hits grow with distance, and where each gate pair sits. It does not draw anything, and it does not read the keyboard.
-- `scripts/main.gd` is the scene. It moves the squad, scrolls the lane, spawns gates and walls, checks when shapes touch, and updates the words on screen. When a rule matters, it asks `lane_rules.gd` and uses the answer.
-- `tests/run_tests.gd` calls those rules with sample numbers and prints PASS or FAIL.
+- `scripts/run_rules.gd` holds the tuning numbers and the math. Gates, crashes, the S-curve for tire health, damage per second, which tire stack is safe, and where each soldier stands in the blob. It does not draw anything.
+- `scripts/main.gd` is the scene. It moves the crowd, builds the bridge, shoots, and shows the words. When a rule matters, it asks `run_rules.gd`.
+- `tests/run_tests.gd` calls those rules and prints PASS or FAIL.
 
 ## Tweak the game
 
-Open `scripts/lane_rules.gd`. The numbers near the top have a short note each. Easy things to try:
+Open `scripts/run_rules.gd`. The numbers near the top have a short note each. Easy things to try:
 
-- `STARTING_SQUAD` — runners at the start
-- `GATE_PAIR_SPACING` — pixels of travel between gate pairs
-- `SCROLL_SPEED` — how fast the lane comes at you
-- `FIRE_EVERY_SECONDS` — time between volleys (smaller is faster)
-- `MAX_VISIBLE_BULLETS` — most bullets drawn in one volley
-- `WALL_HITS_BASE` — hits a wall needs at the start
+- `RUN_SPEED` — how fast the bridge comes at you
+- `FIRE_EVERY_SECONDS` — time between shots
 - `EARLY_ADD_MAX` — biggest `+` gate at the start
-- `X2_CHANCE_PERCENT` — how often a good gate is `x2`, out of 100
+- `X2_CHANCE_PERCENT` — how often a good gate is `x2`
+- `HP_MIN` and `HP_MAX` — tire health at the start and at the end of the curve
+- `CHUNK_LENGTH` — distance from one gate pair to the next
 
-Save the file and press Play again. You do not need to change `main.gd` to retune the game.
+Save the file and press Play again.
 
 ## Run the checks
 
@@ -108,4 +122,4 @@ godot --headless --path . --script res://tests/run_tests.gd
 
 The last line should say `ALL TESTS PASSED`.
 
-The first time you open the project, Godot creates a `.godot` folder next to these files. That folder is a local cache. It is listed in `.gitignore`, so it does not need to be committed.
+The first time you open the project, Godot creates a `.godot` folder. That folder is a local cache. It is listed in `.gitignore`.
