@@ -1,0 +1,21 @@
+# Godot 4 editor cache. Recreated when you open the project.
+.godot/
+
+# Older Godot import folder.
+.import/
+
+# Export settings can contain machine-specific paths.
+export.cfg
+export_presets.cfg
+
+# Generated translation files.
+*.translation
+
+# C# / .NET leftovers, in case those get added later.
+.mono/
+data_*/
+mono_crash.*.json
+
+# Operating system junk.
+.DS_Store
+Thumbs.db
