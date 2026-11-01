@@ -1,9 +1,13 @@
 extends Node2D
 
 # The whole game lives in this scene.
-# The squad stays near the bottom. Gates, enemies, and lane dashes move
-# downward, which looks like the squad is running forward.
+# The squad stays near the bottom. Gates and lane dashes move downward,
+# which looks like the squad is running forward.
 # Every score change goes through scripts/lane_rules.gd.
+#
+# Each gate has a gray wall on the side facing the squad. The number on the
+# wall is the hits left. Bullets are checked before the squad, so a wall that
+# breaks as you arrive still lets the gate through.
 
 const LaneRules = preload("res://scripts/lane_rules.gd")
 
@@ -19,14 +23,13 @@ const SQUAD_Y := 820.0
 const SQUAD_HALF := Vector2(34, 24)
 
 const GATE_W := 240.0
-# Keep this at or under LaneRules.ROAD_SHAPE_HEIGHT so gates cannot touch enemies.
-const GATE_H := 96.0
-# Shorter than a gate, and still inside that same height budget.
-const ENEMY_H := 80.0
+const GATE_H := 64.0
+# The wall sits on the squad's side of the gate. This is its height.
+const WALL_H := 40.0
 const BULLET_W := 8.0
 const BULLET_H := 22.0
 
-# Where new gates and enemies appear (just above the screen).
+# Where new gates appear (just above the screen).
 const SPAWN_Y := -80.0
 # Anything that falls past this is removed.
 const DESPAWN_Y := 1040.0
@@ -36,8 +39,7 @@ const DASH_GAP := 80.0
 const COLOR_ADD := Color(0.22, 0.80, 0.48)
 const COLOR_SUB := Color(0.95, 0.34, 0.34)
 const COLOR_MUL := Color(1.0, 0.76, 0.22)
-const COLOR_LOCKED := Color(0.32, 0.34, 0.42)
-const COLOR_ENEMY := Color(0.96, 0.28, 0.40)
+const COLOR_WALL := Color(0.55, 0.57, 0.64)
 const COLOR_BULLET := Color(1.0, 0.96, 0.66)
 
 # $ paths are node names in scenes/main.tscn.
@@ -54,15 +56,14 @@ var distance_pixels := 0.0
 var game_over := false
 var dragging := false
 var fire_wait := 0.2
-# Which encounter along the road we will spawn next. 0 is the first gate pair.
-var next_encounter := 0
+# Which gate pair along the road we will spawn next. 0 is the first pair.
+var next_pair := 0
 var dashes: Array[Polygon2D] = []
 
 
 func _ready() -> void:
-	# Start in the right lane, so the first enemy is a real choice:
-	# stay and shoot, or cross to the open lane.
-	squad.position = Vector2(_lane_center(LaneRules.Lane.RIGHT), SQUAD_Y)
+	# Start in the right lane, so the other gate is a real choice.
+	squad.position = Vector2(LANE_MID + GATE_W * 0.5, SQUAD_Y)
 	game_over_layer.visible = false
 	_build_lane_dashes()
 	_set_squad_count(LaneRules.STARTING_SQUAD)
@@ -157,60 +158,40 @@ func _shoot(delta: float) -> void:
 
 
 # Pixels a shape travels from the spawn line down to the squad.
-# We spawn something when the squad has traveled (its road distance minus this lead).
 func _spawn_lead() -> int:
 	return int(SQUAD_Y - SPAWN_Y)
 
 
 func _spawn_due() -> void:
 	var reached := int(distance_pixels) + _spawn_lead()
-	# A long frame can make two encounters due at once. Place the later one
+	# A long frame can make two pairs due at once. Place the later one
 	# higher up so the fixed gap between them stays put.
 	while true:
-		var lane_pick := randi()
-		var plan: Dictionary = LaneRules.encounter(next_encounter, lane_pick)
-		var road_distance := int(plan["distance"])
+		var road_distance := LaneRules.gate_pair_distance(next_pair)
 		if road_distance > reached:
 			return
 		var y := SPAWN_Y - float(reached - road_distance)
-		if int(plan["kind"]) == LaneRules.EncounterKind.GATE_PAIR:
-			_spawn_gate_pair(y, road_distance)
-		else:
-			_spawn_lane_enemy(y, plan)
-		next_encounter += 1
+		_spawn_gate_pair(y, road_distance)
+		next_pair += 1
 
 
 func _spawn_gate_pair(y: float, road_distance: int) -> void:
 	var points := _points_at(road_distance)
 	var pair: Dictionary = LaneRules.roll_pair(points)
-	# At most one side is locked, so there is always an open path.
-	var lock_left := false
-	var lock_right := false
-	if randf() < LaneRules.LOCK_CHANCE:
-		if randf() < 0.5:
-			lock_left = true
-		else:
-			lock_right = true
-
 	var left: Dictionary = pair["left"]
 	var right: Dictionary = pair["right"]
-	_spawn_gate(LANE_LEFT + GATE_W * 0.5, y, left, lock_left, points)
-	_spawn_gate(LANE_MID + GATE_W * 0.5, y, right, lock_right, points)
+	_spawn_gate(LANE_LEFT + GATE_W * 0.5, y, left, points)
+	_spawn_gate(LANE_MID + GATE_W * 0.5, y, right, points)
 
 
-func _spawn_gate(x: float, y: float, spec: Dictionary, locked: bool, points: int) -> void:
-	var hits := 0
-	if locked:
-		hits = LaneRules.lock_hits_for_distance(points)
-
+func _spawn_gate(x: float, y: float, spec: Dictionary, points: int) -> void:
 	var gate := Node2D.new()
 	gate.name = "Gate"
 	gate.position = Vector2(x, y)
 	gate.set_meta("kind", "gate")
 	gate.set_meta("op", int(spec["op"]))
 	gate.set_meta("amount", int(spec["amount"]))
-	gate.set_meta("locked", locked)
-	gate.set_meta("hits", hits)
+	gate.set_meta("hits", LaneRules.wall_hits_for_distance(points))
 	# A gate only counts the first time the squad touches it.
 	gate.set_meta("used", false)
 
@@ -219,33 +200,49 @@ func _spawn_gate(x: float, y: float, spec: Dictionary, locked: bool, points: int
 	body.polygon = _rectangle(GATE_W, GATE_H)
 	gate.add_child(body)
 
-	var text := _make_label(28, Color.WHITE)
+	var text := _make_label(26, Color.WHITE)
 	text.name = "Text"
 	gate.add_child(text)
 	_place_label(text, GATE_W, GATE_H)
+
+	# The wall hangs off the bottom of the gate, which is the side the squad meets first.
+	var wall := Polygon2D.new()
+	wall.name = "Wall"
+	wall.color = COLOR_WALL
+	wall.polygon = _rectangle(GATE_W, WALL_H)
+	wall.position = _wall_offset()
+	gate.add_child(wall)
+
+	var hits_label := _make_label(22, Color(0.08, 0.09, 0.12))
+	hits_label.name = "Hits"
+	gate.add_child(hits_label)
+	_place_label_at(hits_label, _wall_offset(), GATE_W, WALL_H)
 
 	world.add_child(gate)
 	_refresh_gate(gate)
 
 
+func _wall_offset() -> Vector2:
+	return Vector2(0, GATE_H * 0.5 + WALL_H * 0.5)
+
+
 func _refresh_gate(gate: Node2D) -> void:
 	var body := gate.get_node("Body") as Polygon2D
 	var text := gate.get_node("Text") as Label
+	var wall := gate.get_node("Wall") as Polygon2D
+	var hits_label := gate.get_node("Hits") as Label
 	var op := int(gate.get_meta("op"))
 	var amount := int(gate.get_meta("amount"))
-	var locked := bool(gate.get_meta("locked"))
-	var bonus := LaneRules.gate_label(op, amount)
-
-	if locked:
-		body.color = COLOR_LOCKED
-		var hits := int(gate.get_meta("hits"))
-		if hits == 1:
-			text.text = "%s\n1 hit" % bonus
-		else:
-			text.text = "%s\n%d hits" % [bonus, hits]
+	var hits := int(gate.get_meta("hits"))
+	body.color = _color_for_op(op)
+	text.text = LaneRules.gate_label(op, amount)
+	if hits <= 0:
+		wall.visible = false
+		hits_label.visible = false
 	else:
-		body.color = _color_for_op(op)
-		text.text = bonus
+		wall.visible = true
+		hits_label.visible = true
+		hits_label.text = str(hits)
 
 
 func _color_for_op(op: int) -> Color:
@@ -255,45 +252,6 @@ func _color_for_op(op: int) -> Color:
 		return COLOR_MUL
 	# Subtract and divide are both bad, so they share the red color.
 	return COLOR_SUB
-
-
-func _spawn_lane_enemy(y: float, plan: Dictionary) -> void:
-	# The rules say this enemy fills one whole lane. The other lane stays empty.
-	var road_distance := int(plan["distance"])
-	var points := _points_at(road_distance)
-	var hp := LaneRules.enemy_hp(points, randi())
-	var loss := LaneRules.enemy_contact_loss(points)
-	var lane := int(plan["lane"])
-	var width := GATE_W * LaneRules.ENEMY_LANE_COVERAGE
-
-	var enemy := Node2D.new()
-	enemy.name = "Enemy"
-	enemy.position = Vector2(_lane_center(lane), y)
-	enemy.set_meta("kind", "enemy")
-	enemy.set_meta("hp", hp)
-	enemy.set_meta("loss", loss)
-	enemy.set_meta("lane", lane)
-	enemy.set_meta("half_w", width * 0.5)
-
-	var body := Polygon2D.new()
-	body.name = "Body"
-	body.color = COLOR_ENEMY
-	body.polygon = _rectangle(width, ENEMY_H)
-	enemy.add_child(body)
-
-	var text := _make_label(32, Color.WHITE)
-	text.name = "Text"
-	text.text = str(hp)
-	enemy.add_child(text)
-	_place_label(text, width, ENEMY_H)
-
-	world.add_child(enemy)
-
-
-func _lane_center(lane: int) -> float:
-	if lane == LaneRules.Lane.LEFT:
-		return LANE_LEFT + GATE_W * 0.5
-	return LANE_MID + GATE_W * 0.5
 
 
 func _points_at(road_pixels: int) -> int:
@@ -363,13 +321,12 @@ func _move_world(delta: float) -> void:
 func _handle_collisions() -> void:
 	var bullets := _actors_of("bullet")
 	var gates := _actors_of("gate")
-	var enemies := _actors_of("enemy")
 
 	for bullet in bullets:
 		var shot := bullet as Node2D
 		if shot.is_queued_for_deletion():
 			continue
-		if _bullet_hits_something(shot, gates, enemies):
+		if _bullet_hits_wall(shot, gates):
 			shot.queue_free()
 
 	if game_over:
@@ -382,79 +339,38 @@ func _handle_collisions() -> void:
 			if game_over:
 				return
 
-	for enemy in enemies:
-		var foe := enemy as Node2D
-		if foe.is_queued_for_deletion():
-			continue
-		if _squad_hits_enemy(foe):
-			_enemy_touches_squad(foe)
-			if game_over:
-				return
 
-
-func _bullet_hits_something(shot: Node2D, gates: Array, enemies: Array) -> bool:
+func _bullet_hits_wall(shot: Node2D, gates: Array) -> bool:
 	var bullet_half := Vector2(float(shot.get_meta("half_w")), BULLET_H * 0.5)
 	var damage := int(shot.get_meta("damage"))
 	for gate in gates:
 		var gate_node := gate as Node2D
 		if gate_node.is_queued_for_deletion():
 			continue
-		# Open gates let bullets through. Only a locked gate can be shot.
-		if not bool(gate_node.get_meta("locked")):
+		if int(gate_node.get_meta("hits")) <= 0:
 			continue
-		if _boxes_overlap(shot.position, bullet_half, gate_node.position, Vector2(GATE_W, GATE_H) * 0.5):
-			_bullet_hits_lock(gate_node, damage)
+		var wall_center := gate_node.position + _wall_offset()
+		var wall_half := Vector2(GATE_W * 0.5, WALL_H * 0.5)
+		if _boxes_overlap(shot.position, bullet_half, wall_center, wall_half):
+			_damage_wall(gate_node, damage)
 			return true
-
-	for enemy in enemies:
-		var foe := enemy as Node2D
-		if foe.is_queued_for_deletion():
-			continue
-		var enemy_half := Vector2(float(foe.get_meta("half_w")), ENEMY_H * 0.5)
-		if _boxes_overlap(shot.position, bullet_half, foe.position, enemy_half):
-			_bullet_hits_enemy(foe, damage)
-			return true
-
 	return false
 
 
-func _bullet_hits_lock(gate: Node2D, damage: int) -> void:
-	var result: Dictionary = LaneRules.hit_lock(int(gate.get_meta("hits")), damage)
+func _damage_wall(gate: Node2D, damage: int) -> void:
+	var result: Dictionary = LaneRules.hit_wall(int(gate.get_meta("hits")), damage)
 	gate.set_meta("hits", int(result["hits_remaining"]))
-	if bool(result["unlocked"]):
-		gate.set_meta("locked", false)
 	_refresh_gate(gate)
-
-
-func _bullet_hits_enemy(enemy: Node2D, damage: int) -> void:
-	var result: Dictionary = LaneRules.damage_enemy(int(enemy.get_meta("hp")), damage)
-	var hp := int(result["hp"])
-	enemy.set_meta("hp", hp)
-	if bool(result["defeated"]):
-		enemy.queue_free()
-		return
-	var text := enemy.get_node("Text") as Label
-	text.text = str(hp)
-
-
-# True when the squad's center is inside the enemy's lane and the shapes touch vertically.
-# The other half of the road does not count, so stepping across avoids the hit.
-func _squad_hits_enemy(enemy: Node2D) -> bool:
-	var dy := absf(squad.position.y - enemy.position.y)
-	if dy > SQUAD_HALF.y + ENEMY_H * 0.5:
-		return false
-	var half_w := float(enemy.get_meta("half_w"))
-	var left := enemy.position.x - half_w
-	var right := enemy.position.x + half_w
-	return squad.position.x >= left and squad.position.x < right
 
 
 func _squad_reaches_gate(gate: Node2D) -> bool:
 	if bool(gate.get_meta("used")):
 		return false
 
-	var dy := absf(squad.position.y - gate.position.y)
-	if dy > SQUAD_HALF.y + GATE_H * 0.5:
+	# The wall hangs below the gate, so the whole shape is taller on that side.
+	var center_y := gate.position.y + WALL_H * 0.5
+	var half_h := (GATE_H + WALL_H) * 0.5
+	if absf(squad.position.y - center_y) > SQUAD_HALF.y + half_h:
 		return false
 
 	# The squad's center picks the path. The shared middle edge belongs
@@ -466,21 +382,13 @@ func _squad_reaches_gate(gate: Node2D) -> bool:
 
 func _squad_enters_gate(gate: Node2D) -> void:
 	# Mark it used before applying, so the same overlap cannot score twice.
-	# If the gate is still locked, apply_gate leaves the count unchanged.
 	gate.set_meta("used", true)
-	var next := LaneRules.apply_gate(
+	var next := LaneRules.take_gate(
 		squad_count,
 		int(gate.get_meta("op")),
 		int(gate.get_meta("amount")),
-		bool(gate.get_meta("locked"))
+		int(gate.get_meta("hits"))
 	)
-	_set_squad_count(next)
-
-
-func _enemy_touches_squad(enemy: Node2D) -> void:
-	enemy.queue_free()
-	var loss := int(enemy.get_meta("loss"))
-	var next := LaneRules.enemy_contact(squad_count, loss)
 	_set_squad_count(next)
 
 
@@ -495,7 +403,9 @@ func _update_squad_label() -> void:
 	squad_label.text = str(squad_count)
 	# Shrink the digits a little once the number gets wide.
 	var font_size := 34
-	if squad_count >= 100:
+	if squad_count >= 1000:
+		font_size = 18
+	elif squad_count >= 100:
 		font_size = 22
 	elif squad_count >= 10:
 		font_size = 28
@@ -558,7 +468,11 @@ func _make_label(font_size: int, font_color: Color) -> Label:
 
 
 func _place_label(label: Label, width: float, height: float) -> void:
-	label.position = Vector2(-width * 0.5, -height * 0.5)
+	_place_label_at(label, Vector2.ZERO, width, height)
+
+
+func _place_label_at(label: Label, center: Vector2, width: float, height: float) -> void:
+	label.position = center - Vector2(width, height) * 0.5
 	label.size = Vector2(width, height)
 
 
