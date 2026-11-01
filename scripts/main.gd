@@ -19,8 +19,10 @@ const SQUAD_Y := 820.0
 const SQUAD_HALF := Vector2(34, 24)
 
 const GATE_W := 240.0
+# Keep this at or under LaneRules.ROAD_SHAPE_HEIGHT so gates cannot touch enemies.
 const GATE_H := 96.0
-const ENEMY_SIZE := 56.0
+# Shorter than a gate, and still inside that same height budget.
+const ENEMY_H := 80.0
 const BULLET_W := 8.0
 const BULLET_H := 22.0
 
@@ -52,13 +54,15 @@ var distance_pixels := 0.0
 var game_over := false
 var dragging := false
 var fire_wait := 0.2
-var spawn_gap := LaneRules.SPAWN_EVERY_SECONDS
-var spawn_wait := 0.6
+# Which encounter along the road we will spawn next. 0 is the first gate pair.
+var next_encounter := 0
 var dashes: Array[Polygon2D] = []
 
 
 func _ready() -> void:
-	squad.position = Vector2(LANE_MID, SQUAD_Y)
+	# Start in the right lane, so the first enemy is a real choice:
+	# stay and shoot, or cross to the open lane.
+	squad.position = Vector2(_lane_center(LaneRules.Lane.RIGHT), SQUAD_Y)
 	game_over_layer.visible = false
 	_build_lane_dashes()
 	_set_squad_count(LaneRules.STARTING_SQUAD)
@@ -80,8 +84,9 @@ func _process(delta: float) -> void:
 		_update_hud()
 		return
 
-	_spawn_tick(delta)
+	# Distance traveled is the clock. Spawns use that, not a random timer.
 	distance_pixels += LaneRules.SCROLL_SPEED * delta
+	_spawn_due()
 	_update_hud()
 
 
@@ -147,28 +152,37 @@ func _shoot(delta: float) -> void:
 	fire_wait -= delta
 	if fire_wait > 0.0:
 		return
-	_spawn_bullet()
+	_spawn_volley()
 	fire_wait = LaneRules.FIRE_EVERY_SECONDS
 
 
-func _spawn_tick(delta: float) -> void:
-	spawn_wait -= delta
-	if spawn_wait > 0.0:
-		return
-
-	if randf() < LaneRules.ENEMY_SPAWN_CHANCE:
-		_spawn_enemy()
-	else:
-		_spawn_gate_pair()
-
-	# The only difficulty change: spawns slowly come a bit faster.
-	spawn_gap -= LaneRules.SPAWN_RAMP_STEP
-	if spawn_gap < LaneRules.MIN_SPAWN_EVERY_SECONDS:
-		spawn_gap = LaneRules.MIN_SPAWN_EVERY_SECONDS
-	spawn_wait = spawn_gap + randf() * LaneRules.SPAWN_JITTER_SECONDS
+# Pixels a shape travels from the spawn line down to the squad.
+# We spawn something when the squad has traveled (its road distance minus this lead).
+func _spawn_lead() -> int:
+	return int(SQUAD_Y - SPAWN_Y)
 
 
-func _spawn_gate_pair() -> void:
+func _spawn_due() -> void:
+	var reached := int(distance_pixels) + _spawn_lead()
+	# A long frame can make two encounters due at once. Place the later one
+	# higher up so the fixed gap between them stays put.
+	while true:
+		var lane_pick := randi()
+		var plan: Dictionary = LaneRules.encounter(next_encounter, lane_pick)
+		var road_distance := int(plan["distance"])
+		if road_distance > reached:
+			return
+		var y := SPAWN_Y - float(reached - road_distance)
+		if int(plan["kind"]) == LaneRules.EncounterKind.GATE_PAIR:
+			_spawn_gate_pair(y, road_distance)
+		else:
+			_spawn_lane_enemy(y, plan)
+		next_encounter += 1
+
+
+func _spawn_gate_pair(y: float, road_distance: int) -> void:
+	var points := _points_at(road_distance)
+	var pair: Dictionary = LaneRules.roll_pair(points)
 	# At most one side is locked, so there is always an open path.
 	var lock_left := false
 	var lock_right := false
@@ -178,34 +192,23 @@ func _spawn_gate_pair() -> void:
 		else:
 			lock_right = true
 
-	_spawn_gate(LANE_LEFT + GATE_W * 0.5, lock_left)
-	_spawn_gate(LANE_MID + GATE_W * 0.5, lock_right)
+	var left: Dictionary = pair["left"]
+	var right: Dictionary = pair["right"]
+	_spawn_gate(LANE_LEFT + GATE_W * 0.5, y, left, lock_left, points)
+	_spawn_gate(LANE_MID + GATE_W * 0.5, y, right, lock_right, points)
 
 
-func _roll_gate() -> Dictionary:
-	var op := int(LaneRules.OP_DECK.pick_random())
-	var amount := 2
-	if op == LaneRules.Op.ADD:
-		amount = int(LaneRules.ADD_AMOUNTS.pick_random())
-	elif op == LaneRules.Op.SUB:
-		amount = int(LaneRules.SUB_AMOUNTS.pick_random())
-	else:
-		amount = int(LaneRules.MUL_AMOUNTS.pick_random())
-	return {"op": op, "amount": amount}
-
-
-func _spawn_gate(x: float, locked: bool) -> void:
-	var rolled := _roll_gate()
+func _spawn_gate(x: float, y: float, spec: Dictionary, locked: bool, points: int) -> void:
 	var hits := 0
 	if locked:
-		hits = LaneRules.DEFAULT_LOCK_HITS
+		hits = LaneRules.lock_hits_for_distance(points)
 
 	var gate := Node2D.new()
 	gate.name = "Gate"
-	gate.position = Vector2(x, SPAWN_Y)
+	gate.position = Vector2(x, y)
 	gate.set_meta("kind", "gate")
-	gate.set_meta("op", int(rolled["op"]))
-	gate.set_meta("amount", int(rolled["amount"]))
+	gate.set_meta("op", int(spec["op"]))
+	gate.set_meta("amount", int(spec["amount"]))
 	gate.set_meta("locked", locked)
 	gate.set_meta("hits", hits)
 	# A gate only counts the first time the squad touches it.
@@ -248,53 +251,97 @@ func _refresh_gate(gate: Node2D) -> void:
 func _color_for_op(op: int) -> Color:
 	if op == LaneRules.Op.ADD:
 		return COLOR_ADD
-	if op == LaneRules.Op.SUB:
-		return COLOR_SUB
-	return COLOR_MUL
+	if op == LaneRules.Op.MUL:
+		return COLOR_MUL
+	# Subtract and divide are both bad, so they share the red color.
+	return COLOR_SUB
 
 
-func _spawn_enemy() -> void:
-	var hp := randi_range(LaneRules.ENEMY_HP_MIN, LaneRules.ENEMY_HP_MAX)
-	var half := ENEMY_SIZE * 0.5
-	var x := randf_range(LANE_LEFT + half, LANE_RIGHT - half)
+func _spawn_lane_enemy(y: float, plan: Dictionary) -> void:
+	# The rules say this enemy fills one whole lane. The other lane stays empty.
+	var road_distance := int(plan["distance"])
+	var points := _points_at(road_distance)
+	var hp := LaneRules.enemy_hp(points, randi())
+	var loss := LaneRules.enemy_contact_loss(points)
+	var lane := int(plan["lane"])
+	var width := GATE_W * LaneRules.ENEMY_LANE_COVERAGE
 
 	var enemy := Node2D.new()
 	enemy.name = "Enemy"
-	enemy.position = Vector2(x, SPAWN_Y)
+	enemy.position = Vector2(_lane_center(lane), y)
 	enemy.set_meta("kind", "enemy")
 	enemy.set_meta("hp", hp)
+	enemy.set_meta("loss", loss)
+	enemy.set_meta("lane", lane)
+	enemy.set_meta("half_w", width * 0.5)
 
 	var body := Polygon2D.new()
 	body.name = "Body"
 	body.color = COLOR_ENEMY
-	body.polygon = _rectangle(ENEMY_SIZE, ENEMY_SIZE)
+	body.polygon = _rectangle(width, ENEMY_H)
 	enemy.add_child(body)
 
-	var text := _make_label(24, Color.WHITE)
+	var text := _make_label(32, Color.WHITE)
 	text.name = "Text"
 	text.text = str(hp)
 	enemy.add_child(text)
-	_place_label(text, ENEMY_SIZE, ENEMY_SIZE)
+	_place_label(text, width, ENEMY_H)
 
 	world.add_child(enemy)
 
 
-func _spawn_bullet() -> void:
+func _lane_center(lane: int) -> float:
+	if lane == LaneRules.Lane.LEFT:
+		return LANE_LEFT + GATE_W * 0.5
+	return LANE_MID + GATE_W * 0.5
+
+
+func _points_at(road_pixels: int) -> int:
+	return int(float(road_pixels) / LaneRules.PIXELS_PER_DISTANCE)
+
+
+# One row of bullets. The count and the damages come from lane_rules.gd.
+# They are spread in a straight row, a bit wider than the squad, and fly up in parallel.
+func _spawn_volley() -> void:
+	var damages: Array = LaneRules.volley_damages(squad_count)
+	var count := damages.size()
+	var span := LaneRules.volley_span(count)
+	for i in count:
+		var offset := 0.0
+		if count > 1:
+			var step := span / float(count - 1)
+			offset = -span * 0.5 + step * float(i)
+		var damage := int(damages[i]) * LaneRules.BULLET_DAMAGE
+		_spawn_bullet(offset, damage)
+
+
+func _spawn_bullet(x_offset: float, damage: int) -> void:
+	var width := _bullet_width(damage)
 	var bullet := Node2D.new()
 	bullet.name = "Bullet"
-	# Start just in front of the squad, then fly up.
-	bullet.position = squad.position + Vector2(0, -(SQUAD_HALF.y + BULLET_H * 0.5))
+	# Start just in front of the squad, then fly straight up.
+	bullet.position = squad.position + Vector2(x_offset, -(SQUAD_HALF.y + BULLET_H * 0.5))
 	bullet.set_meta("kind", "bullet")
+	bullet.set_meta("damage", damage)
+	bullet.set_meta("half_w", width * 0.5)
 
 	var body := Polygon2D.new()
 	body.name = "Body"
 	body.color = COLOR_BULLET
-	body.polygon = _rectangle(BULLET_W, BULLET_H)
+	body.polygon = _rectangle(width, BULLET_H)
 	bullet.add_child(body)
 
 	# Parent to World, not the squad, so the shot stays straight
 	# when the squad slides sideways.
 	world.add_child(bullet)
+
+
+func _bullet_width(damage: int) -> float:
+	# A merged bullet (more than one runner) is a little thicker, so you can see it.
+	var extra := damage - LaneRules.BULLET_DAMAGE
+	if extra < 0:
+		extra = 0
+	return BULLET_W + float(extra) * 4.0
 
 
 func _move_world(delta: float) -> void:
@@ -339,14 +386,15 @@ func _handle_collisions() -> void:
 		var foe := enemy as Node2D
 		if foe.is_queued_for_deletion():
 			continue
-		if _boxes_overlap(squad.position, SQUAD_HALF, foe.position, Vector2(ENEMY_SIZE, ENEMY_SIZE) * 0.5):
+		if _squad_hits_enemy(foe):
 			_enemy_touches_squad(foe)
 			if game_over:
 				return
 
 
 func _bullet_hits_something(shot: Node2D, gates: Array, enemies: Array) -> bool:
-	var bullet_half := Vector2(BULLET_W, BULLET_H) * 0.5
+	var bullet_half := Vector2(float(shot.get_meta("half_w")), BULLET_H * 0.5)
+	var damage := int(shot.get_meta("damage"))
 	for gate in gates:
 		var gate_node := gate as Node2D
 		if gate_node.is_queued_for_deletion():
@@ -355,30 +403,31 @@ func _bullet_hits_something(shot: Node2D, gates: Array, enemies: Array) -> bool:
 		if not bool(gate_node.get_meta("locked")):
 			continue
 		if _boxes_overlap(shot.position, bullet_half, gate_node.position, Vector2(GATE_W, GATE_H) * 0.5):
-			_bullet_hits_lock(gate_node)
+			_bullet_hits_lock(gate_node, damage)
 			return true
 
 	for enemy in enemies:
 		var foe := enemy as Node2D
 		if foe.is_queued_for_deletion():
 			continue
-		if _boxes_overlap(shot.position, bullet_half, foe.position, Vector2(ENEMY_SIZE, ENEMY_SIZE) * 0.5):
-			_bullet_hits_enemy(foe)
+		var enemy_half := Vector2(float(foe.get_meta("half_w")), ENEMY_H * 0.5)
+		if _boxes_overlap(shot.position, bullet_half, foe.position, enemy_half):
+			_bullet_hits_enemy(foe, damage)
 			return true
 
 	return false
 
 
-func _bullet_hits_lock(gate: Node2D) -> void:
-	var result: Dictionary = LaneRules.hit_lock(int(gate.get_meta("hits")))
+func _bullet_hits_lock(gate: Node2D, damage: int) -> void:
+	var result: Dictionary = LaneRules.hit_lock(int(gate.get_meta("hits")), damage)
 	gate.set_meta("hits", int(result["hits_remaining"]))
 	if bool(result["unlocked"]):
 		gate.set_meta("locked", false)
 	_refresh_gate(gate)
 
 
-func _bullet_hits_enemy(enemy: Node2D) -> void:
-	var result: Dictionary = LaneRules.damage_enemy(int(enemy.get_meta("hp")), LaneRules.BULLET_DAMAGE)
+func _bullet_hits_enemy(enemy: Node2D, damage: int) -> void:
+	var result: Dictionary = LaneRules.damage_enemy(int(enemy.get_meta("hp")), damage)
 	var hp := int(result["hp"])
 	enemy.set_meta("hp", hp)
 	if bool(result["defeated"]):
@@ -386,6 +435,18 @@ func _bullet_hits_enemy(enemy: Node2D) -> void:
 		return
 	var text := enemy.get_node("Text") as Label
 	text.text = str(hp)
+
+
+# True when the squad's center is inside the enemy's lane and the shapes touch vertically.
+# The other half of the road does not count, so stepping across avoids the hit.
+func _squad_hits_enemy(enemy: Node2D) -> bool:
+	var dy := absf(squad.position.y - enemy.position.y)
+	if dy > SQUAD_HALF.y + ENEMY_H * 0.5:
+		return false
+	var half_w := float(enemy.get_meta("half_w"))
+	var left := enemy.position.x - half_w
+	var right := enemy.position.x + half_w
+	return squad.position.x >= left and squad.position.x < right
 
 
 func _squad_reaches_gate(gate: Node2D) -> bool:
@@ -418,7 +479,8 @@ func _squad_enters_gate(gate: Node2D) -> void:
 
 func _enemy_touches_squad(enemy: Node2D) -> void:
 	enemy.queue_free()
-	var next := LaneRules.enemy_contact(squad_count, LaneRules.ENEMY_CONTACT_LOSS)
+	var loss := int(enemy.get_meta("loss"))
+	var next := LaneRules.enemy_contact(squad_count, loss)
 	_set_squad_count(next)
 
 

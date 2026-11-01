@@ -22,25 +22,28 @@ The window is tall and narrow (540 by 960) on purpose, like a phone held upright
 
 ### How a run works
 
-The number on the squad is how many runners you have. It starts at 5.
+The number on the squad is how many runners you have. It starts at 5, in the right lane, and never goes above 24.
 
-Gates come in pairs. One gate fills the left half of the lane, the other fills the right half. Steer through the one you want:
+Gates come in pairs, always the same distance apart. One gate fills the left half of the lane, the other fills the right half. One side is always good and the other is always bad. Which side is which changes every pair.
 
-- `+N` adds that many runners
-- `-N` removes that many runners
-- `x2` multiplies the squad (x2 turns 5 into 10)
+- `+N` adds that many runners. Early on this is only +1, +2, or +3.
+- `x2` doubles the squad. It does not show up at the start.
+- `-N` removes that many runners.
+- `/2` keeps half the squad, rounded down. 5 becomes 2. 1 becomes 0.
 
 The count never goes below 0. At 0 the run is over.
 
-Some gates are **locked**. They are dull gray and show a hit count under the bonus, like `+10` and `4 hits`. Each bullet that hits the gate lowers that number by 1. At 0 the gate unlocks, turns its real color, and works like a normal gate.
+Some gates are **locked**. They are dull gray and show a hit count under the label, like `+2` and `12 hits`. Bullets lower that number. A bigger squad lowers it faster, because more runners means more shots. At 0 the gate unlocks, turns its real color, and works like a normal gate.
 
 **Locked-gate rule:** running through a gate that is still locked does nothing. You do not get the bonus, you do not take the penalty, and you do not lose a runner just for touching it. Shoot it open first if you want what it says. Bullets pass through gates that are already open.
 
-Red squares are enemies. The number on a square is its health. Bullets lower that health, and at 0 the enemy is gone. If an enemy touches the squad, you lose 1 runner and that enemy disappears. Steer around the ones you do not want to fight.
+The squad shoots a row of bullets by itself. One runner is one bullet. With 8 or fewer runners you see that many bullets, side by side. With more than 8, you still see 8 bullets, but the extra runners are merged into them, so some bullets are thicker and hit harder. The damages in one volley add up to the squad count.
 
-**Distance** at the top is your score. It climbs the whole time the lane is scrolling.
+Red bars are enemies. Each bar fills one whole half of the road, and it sits in the gap between gate pairs so it does not cover a gate. The number on the bar is its health. Health and the hit they deal both climb as the distance goes up. The other half of the road is empty, so you can always change lanes to go around. If you stay in the enemy's lane, shoot it down before it reaches you. Touching it removes several runners.
 
-Your squad's center decides which gate you took. The exact middle line counts as the right-hand gate, so you cannot score both gates of a pair at the same point.
+**Distance** at the top is your score. It climbs the whole time the lane is scrolling. Gate bonuses, enemy health, and how hard a touch hurts all grow slowly with that distance.
+
+Your squad's center decides which gate you took, and which lane an enemy can hit you in. The exact middle line counts as the right-hand lane.
 
 ## Project layout
 
@@ -80,7 +83,7 @@ While the game is running, short white dashes are added under **Background** so 
 
 ### Which script does what
 
-- `scripts/lane_rules.gd` holds the rules and the tuning numbers. It knows how `+`, `-`, and `x` change the squad, how a lock counts down, and what an enemy does to health and to the squad. It does not draw anything, and it does not read the keyboard.
+- `scripts/lane_rules.gd` holds the rules and the tuning numbers. It knows how `+`, `-`, `x`, and `/` change the squad, how a lock counts down, how many bullets a squad fires, how gate values and enemy strength grow with distance, and where each gate pair and enemy sits on the road. It does not draw anything, and it does not read the keyboard.
 - `scripts/main.gd` is the scene. It moves the squad, scrolls the lane, spawns gates and enemies, checks when shapes touch, and updates the words on screen. When a rule matters, it asks `lane_rules.gd` and uses the answer.
 - `tests/run_tests.gd` calls those rules with sample numbers and prints PASS or FAIL.
 
@@ -89,10 +92,13 @@ While the game is running, short white dashes are added under **Background** so 
 Open `scripts/lane_rules.gd`. The numbers near the top have a short note each. Easy things to try:
 
 - `STARTING_SQUAD` — runners at the start
+- `MAX_SQUAD` — the biggest the squad number can get
+- `GATE_PAIR_SPACING` — pixels of travel between gate pairs
 - `SCROLL_SPEED` — how fast the lane comes at you
-- `FIRE_EVERY_SECONDS` — time between shots (smaller is faster)
-- `DEFAULT_LOCK_HITS` — bullets needed to open a locked gate
-- `ADD_AMOUNTS`, `SUB_AMOUNTS`, `MUL_AMOUNTS` — the gate labels
+- `FIRE_EVERY_SECONDS` — time between volleys (smaller is faster)
+- `MAX_VISIBLE_BULLETS` — most bullets drawn in one volley
+- `LOCK_HITS_BASE` — hits a locked gate needs at the start
+- `EARLY_ADD_MAX` — biggest `+` gate at the start
 
 Save the file and press Play again. You do not need to change `main.gd` to retune the game.
 

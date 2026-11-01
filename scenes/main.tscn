@@ -22,7 +22,7 @@ polygon = PackedVector2Array(510, 0, 518, 0, 518, 960, 510, 960)
 [node name="World" type="Node2D" parent="."]
 
 [node name="Squad" type="Node2D" parent="."]
-position = Vector2(270, 820)
+position = Vector2(390, 820)
 
 [node name="Body" type="Polygon2D" parent="Squad"]
 color = Color(0.29, 0.78, 0.98, 1)
